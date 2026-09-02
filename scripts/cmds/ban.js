@@ -41,47 +41,63 @@ module.exports = {
 		}
 	},
 
-	onStart: async function ({ message, msg, args, bot }) {
-		const chat = msg?.chat || arguments?.[0]?.event?.chat || arguments?.[0]?.message?.chat;
+	onStart: async function ({ message, event, args, api }) {
+		const chat = event?.raw?.chat;
 		if (!chat?.id)
 			return message.reply("⚠️ | Telegram chat information was not received. Send /ban directly in the group.");
 
-		// Telegram groups/supergroups have group/supergroup chat types.
-		// The negative chat ID fallback also handles wrappers that omit chat.type.
-		if (chat.type && !["group", "supergroup"].includes(chat.type) && Number(chat.id) > 0)
+		if (chat.type && !["group", "supergroup"].includes(chat.type))
 			return message.reply("⚠️ | This command can only be used in a group.\nChat type: " + chat.type);
 
 		const chatId = chat.id;
-		const actorId = (msg?.from || arguments?.[0]?.event?.from || arguments?.[0]?.event?.sender)?.id;
-		if (!actorId) return message.reply("❌ | Telegram user information was not received.");
+		const actorId = event.senderID;
+		if (!actorId)
+			return message.reply("❌ | Telegram user information was not received.");
 
-		const actor = await bot.getChatMember(chatId, actorId);
-		const isAdmin = ["administrator", "creator"].includes(actor.status);
+		let actor;
+		try {
+			actor = await api.call("getChatMember", {
+				chat_id: chatId,
+				user_id: Number(actorId)
+			});
+		}
+		catch (e) {
+			return message.reply("❌ | Could not verify your group administrator status.\nTelegram: " + e.message);
+		}
 
-		if (!isAdmin)
+		if (!["administrator", "creator"].includes(actor.status))
 			return message.reply("❌ | Only group administrators can use this command.");
 
-		const botInfo = await bot.getMe();
-		const botMember = await bot.getChatMember(chatId, botInfo.id);
+		let botMember;
+		try {
+			botMember = await api.call("getChatMember", {
+				chat_id: chatId,
+				user_id: api.getCurrentUserID()
+			});
+		}
+		catch (e) {
+			return message.reply(this.langs.en.needAdmin);
+		}
+
 		const botCanBan =
-			["administrator", "creator"].includes(botMember.status) &&
-			(botMember.status === "creator" || botMember.can_restrict_members === true);
+			["administrator", "creator"].includes(botMember.status)
+			&& (botMember.status === "creator" || botMember.can_restrict_members === true);
 
 		if (!botCanBan)
-			return message.reply("⚠️ | Bot needs administrator + Ban users permission.");
+			return message.reply(this.langs.en.needAdmin);
 
 		const db = global.TelegramBannedUsers || (global.TelegramBannedUsers = new Map());
-		if (!db.has(String(chatId))) db.set(String(chatId), []);
+		if (!db.has(String(chatId)))
+			db.set(String(chatId), []);
 		const dataBanned = db.get(String(chatId));
 
 		const sub = String(args[0] || "").toLowerCase();
 
-		// /ban unban
 		if (sub === "unban") {
-			const target = getTarget(msg, args[1]);
+			const target = getTarget(event, args[1]);
 
 			if (!target)
-				return message.reply("⚠️ | " + this.langs.en.notFoundTargetUnban);
+				return message.reply(this.langs.en.notFoundTargetUnban);
 
 			const index = dataBanned.findIndex(item => String(item.id) === String(target.id));
 			if (index === -1)
@@ -90,9 +106,14 @@ module.exports = {
 			dataBanned.splice(index, 1);
 
 			try {
-				await bot.unbanChatMember(chatId, target.id, { only_if_banned: true });
-			} catch (e) {
-				// If Telegram says the user is not currently banned, database removal is still valid.
+				await api.call("unbanChatMember", {
+					chat_id: chatId,
+					user_id: Number(target.id),
+					only_if_banned: true
+				});
+			}
+			catch (e) {
+				// The database entry is still removed if the user is already unbanned.
 			}
 
 			return message.reply(
@@ -100,7 +121,6 @@ module.exports = {
 			);
 		}
 
-		// /ban check
 		if (sub === "check") {
 			if (!dataBanned.length)
 				return message.reply(this.langs.en.noData);
@@ -109,21 +129,27 @@ module.exports = {
 
 			for (const user of dataBanned) {
 				try {
-					const member = await bot.getChatMember(chatId, Number(user.id));
+					const member = await api.call("getChatMember", {
+						chat_id: chatId,
+						user_id: Number(user.id)
+					});
 
 					if (!["left", "kicked"].includes(member.status)) {
-						await bot.banChatMember(chatId, Number(user.id));
+						await api.call("banChatMember", {
+							chat_id: chatId,
+							user_id: Number(user.id)
+						});
 						kicked++;
 					}
-				} catch (e) {
-					// User may already have left / Telegram may not expose the member.
+				}
+				catch (e) {
+					// User may already have left or Telegram may not expose the member.
 				}
 			}
 
 			return message.reply(`✅ | Check complete. ${kicked} banned member(s) removed.`);
 		}
 
-		// /ban list
 		if (sub === "list") {
 			if (!dataBanned.length)
 				return message.reply(this.langs.en.noData);
@@ -151,8 +177,7 @@ module.exports = {
 			return message.reply(text);
 		}
 
-		// Normal /ban
-		const target = getTarget(msg, args[0]);
+		const target = getTarget(event, args[0]);
 
 		if (!target)
 			return message.reply(this.langs.en.notFoundTarget);
@@ -160,13 +185,16 @@ module.exports = {
 		if (String(target.id) === String(actorId))
 			return message.reply(this.langs.en.cantSelfBan);
 
-		// Never allow banning admins/creator.
 		try {
-			const targetMember = await bot.getChatMember(chatId, target.id);
+			const targetMember = await api.call("getChatMember", {
+				chat_id: chatId,
+				user_id: Number(target.id)
+			});
 			if (["administrator", "creator"].includes(targetMember.status))
 				return message.reply(this.langs.en.cantBanAdmin);
-		} catch (e) {
-			// If Telegram cannot find the member, banChatMember will return the actual error.
+		}
+		catch (e) {
+			// Telegram will return the actual error when the ban is attempted.
 		}
 
 		if (dataBanned.some(item => String(item.id) === String(target.id)))
@@ -184,16 +212,18 @@ module.exports = {
 			reason
 		};
 
-		dataBanned.push(record);
-
 		try {
-			await bot.banChatMember(chatId, Number(target.id));
+			await api.call("banChatMember", {
+				chat_id: chatId,
+				user_id: Number(target.id)
+			});
+			dataBanned.push(record);
+
 			return message.reply(
 				this.langs.en.bannedSuccess.replace("%1", record.name)
 			);
-		} catch (e) {
-			// Do not leave a fake ban record if Telegram rejected the actual ban.
-			dataBanned.pop();
+		}
+		catch (e) {
 			return message.reply(
 				"❌ | Ban failed. Make sure the bot is admin and has 'Ban users' permission.\n" +
 				"Telegram: " + e.message
@@ -201,36 +231,43 @@ module.exports = {
 		}
 	},
 
-	// Telegram equivalent of the old Facebook onEvent.
-	onEvent: async function ({ msg, bot, message }) {
-		if (!msg?.new_chat_members?.length)
+	onEvent: async function ({ event, api, message }) {
+		if (event?.logMessageType !== "log:subscribe")
 			return;
 
-		const chatId = msg.chat.id;
+		const chatId = event.threadID;
 		const db = global.TelegramBannedUsers || (global.TelegramBannedUsers = new Map());
 		const dataBanned = db.get(String(chatId)) || [];
 
 		if (!dataBanned.length)
 			return;
 
-		for (const user of msg.new_chat_members) {
-			const banned = dataBanned.find(item => String(item.id) === String(user.id));
+		const addedParticipants = event.logMessageData?.addedParticipants || [];
+
+		for (const user of addedParticipants) {
+			const userId = user.userFbId;
+			const banned = dataBanned.find(item => String(item.id) === String(userId));
 			if (!banned)
 				continue;
 
-			const name = getName(user);
+			const name = user.userFbName || "Telegram user";
+
 			try {
-				await bot.banChatMember(chatId, user.id);
+				await api.call("banChatMember", {
+					chat_id: chatId,
+					user_id: Number(userId)
+				});
 				await message.send(
 					`⚠️ | ${name} was already banned!\n` +
-					`ID: ${user.id}\n` +
+					`ID: ${userId}\n` +
 					`Reason: ${banned.reason || "No reason"}\n` +
 					`Ban time: ${banned.time}\n\n` +
 					`Bot automatically removed this member.`
 				);
-			} catch (e) {
+			}
+			catch (e) {
 				await message.send(
-					`⚠️ | ${name} (${user.id}) is banned, but the bot could not remove them.\n` +
+					`⚠️ | ${name} (${userId}) is banned, but the bot could not remove them.\n` +
 					`Give the bot administrator + Ban users permission.`
 				);
 			}
@@ -238,9 +275,16 @@ module.exports = {
 	}
 };
 
-function getTarget(msg, value) {
-	if (msg.reply_to_message?.from?.id) {
-		return msg.reply_to_message.from;
+function getTarget(event, value) {
+	const reply = event?.raw?.reply_to_message || event?.messageReply;
+	if (reply?.from?.id || reply?.senderID) {
+		const user = reply.from || reply;
+		return {
+			id: user.id || user.senderID,
+			first_name: user.first_name,
+			last_name: user.last_name,
+			username: user.username
+		};
 	}
 
 	if (value && /^-?\d+$/.test(String(value))) {
@@ -254,6 +298,6 @@ function getTarget(msg, value) {
 }
 
 function getName(user) {
-	return [user.first_name, user.last_name].filter(Boolean).join(" ") ||
-		(user.username ? "@" + user.username : "Telegram user");
+	return [user.first_name, user.last_name].filter(Boolean).join(" ")
+		|| (user.username ? "@" + user.username : "Telegram user");
 }
