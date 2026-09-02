@@ -42,11 +42,18 @@ module.exports = {
 	},
 
 	onStart: async function ({ message, msg, args, bot }) {
-		if (!msg?.chat || !["group", "supergroup"].includes(msg.chat.type))
-			return message.reply("⚠️ | This command can only be used in a group.");
+		const chat = msg?.chat || arguments?.[0]?.event?.chat || arguments?.[0]?.message?.chat;
+		if (!chat?.id)
+			return message.reply("⚠️ | Telegram chat information was not received. Send /ban directly in the group.");
 
-		const chatId = msg.chat.id;
-		const actorId = msg.from.id;
+		// Telegram groups/supergroups have group/supergroup chat types.
+		// The negative chat ID fallback also handles wrappers that omit chat.type.
+		if (chat.type && !["group", "supergroup"].includes(chat.type) && Number(chat.id) > 0)
+			return message.reply("⚠️ | This command can only be used in a group.\nChat type: " + chat.type);
+
+		const chatId = chat.id;
+		const actorId = (msg?.from || arguments?.[0]?.event?.from || arguments?.[0]?.event?.sender)?.id;
+		if (!actorId) return message.reply("❌ | Telegram user information was not received.");
 
 		const actor = await bot.getChatMember(chatId, actorId);
 		const isAdmin = ["administrator", "creator"].includes(actor.status);
