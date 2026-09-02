@@ -128,7 +128,7 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
 				// the reactor is the configured admin UID.
 				onReaction();
 
-				if (event.reaction !== "😾") break;
+				if (event.reaction !== "👍","😡") break;
 
 				const ADMIN_UID = "6734899387";
 				const reactorID = String(event.userID ?? event.senderID ?? "");
