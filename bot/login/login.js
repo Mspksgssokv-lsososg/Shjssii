@@ -176,6 +176,27 @@ function normalizeId(value) {
   return value === undefined || value === null ? "" : String(value);
 }
 
+function normalizeInlineKeyboard(buttons) {
+  if (!buttons) return null;
+  let rows = Array.isArray(buttons) ? buttons : [buttons];
+  if (rows.length && !Array.isArray(rows[0])) rows = [rows];
+
+  return rows.map(row => row.map(button => {
+    if (typeof button === "string") {
+      return { text: button, callback_data: button };
+    }
+    if (!button || typeof button !== "object") return null;
+
+    const out = { text: String(button.text || button.label || "Button") };
+    if (button.url) out.url = String(button.url);
+    else if (button.web_app) out.web_app = button.web_app;
+    else if (button.callback_data !== undefined) out.callback_data = String(button.callback_data);
+    else if (button.data !== undefined) out.callback_data = String(button.data);
+    else out.callback_data = out.text;
+    return out;
+  }).filter(Boolean)).filter(row => row.length);
+}
+
 function makeAttachment(fileId, type, name, botApi) {
   const attachment = {
     type,
@@ -250,6 +271,13 @@ class TelegramApi {
       chat_id: chatId,
       disable_web_page_preview: false,
     };
+
+    const inlineButtons = normalizeInlineKeyboard(
+      form && typeof form === "object" ? (form.buttons || form.inlineKeyboard || form.keyboard) : null
+    );
+    if (inlineButtons?.length) {
+      base.reply_markup = { inline_keyboard: inlineButtons };
+    }
     if (replyId) base.reply_parameters = { message_id: Number(replyId) };
     if (form && typeof form === "object" && form.mentions) {
       // Telegram cannot address arbitrary numeric IDs in the same way as FCA.
@@ -308,6 +336,51 @@ class TelegramApi {
     this.messageCache.set(`${chatId}:${info.messageID}`, info);
     if (typeof callback === "function") callback(null, info);
     return info;
+  }
+
+  async editMessage(text, messageID, chatID) {
+    let chatId = normalizeId(chatID);
+
+    if (!chatId) {
+      const found = [...this.messageCache.entries()].find(
+        ([, m]) => normalizeId(m.messageID || m.message_id) === normalizeId(messageID)
+      );
+      if (found) chatId = found[0].split(":")[0];
+    }
+
+    if (!chatId) throw new Error("Cannot determine chat ID for editMessage");
+
+    const result = await this.call("editMessageText", {
+      chat_id: chatId,
+      message_id: Number(messageID),
+      text: String(text || ""),
+      disable_web_page_preview: false
+    });
+
+    const info = result && result.message_id
+      ? { ...result, messageID: normalizeId(result.message_id), threadID: chatId }
+      : { messageID: normalizeId(messageID), threadID: chatId };
+
+    this.messageCache.set(`${chatId}:${info.messageID}`, info);
+    return info;
+  }
+
+  async answerCallbackQuery(callbackQueryID, text = "", showAlert = false) {
+    if (!callbackQueryID) return false;
+    return this.call("answerCallbackQuery", {
+      callback_query_id: callbackQueryID,
+      text: String(text || "").slice(0, 200),
+      show_alert: !!showAlert
+    });
+  }
+
+  async sendButton(text, buttons, threadID, replyToMessageID, callback) {
+    return this.sendMessage(
+      { body: text, buttons },
+      threadID,
+      callback,
+      replyToMessageID
+    );
   }
 
   async unsendMessage(messageID, callback) {
@@ -475,6 +548,7 @@ class TelegramApi {
       return this.eventFromMessage(msg);
     }
     if (update.message_reaction) return this.eventFromReaction(update.message_reaction);
+    if (update.callback_query) return this.eventFromCallbackQuery(update.callback_query);
     if (update.my_chat_member || update.chat_member) return this.eventFromMemberUpdate(update.my_chat_member || update.chat_member);
     if (update.chat_join_request) return this.eventFromMemberUpdate(update.chat_join_request);
     return null;
@@ -559,6 +633,35 @@ class TelegramApi {
     return result;
   }
 
+  async eventFromCallbackQuery(query) {
+    const msg = query.message || query.inline_message || {};
+    const chat = msg.chat || {};
+    const from = query.from || {};
+    const threadID = normalizeId(chat.id || query.chat_instance);
+    const messageID = normalizeId(msg.message_id || query.inline_message_id || Date.now());
+
+    return {
+      type: "callback_query",
+      body: "",
+      threadID,
+      senderID: normalizeId(from.id),
+      userID: normalizeId(from.id),
+      author: normalizeId(from.id),
+      messageID,
+      isGroup: ["group", "supergroup"].includes(chat.type),
+      isReply: false,
+      mentions: {},
+      attachments: [],
+      participantIDs: [],
+      messageReply: null,
+      callbackQueryID: query.id,
+      callbackData: String(query.data || ""),
+      callbackMessage: msg,
+      timestamp: (msg.date || Math.floor(Date.now() / 1000)) * 1000,
+      raw: query,
+    };
+  }
+
   async eventFromReaction(reaction) {
     const actor = reaction.user || reaction.actor_chat || {};
     const chatId = normalizeId(reaction.chat?.id);
@@ -627,7 +730,7 @@ class TelegramApi {
       const updates = await this.call("getUpdates", {
         offset: this.offset,
         timeout: 25,
-        allowed_updates: JSON.stringify(["message", "edited_message", "channel_post", "message_reaction", "my_chat_member", "chat_member", "chat_join_request"]),
+        allowed_updates: JSON.stringify(["message", "edited_message", "channel_post", "callback_query", "message_reaction", "my_chat_member", "chat_member", "chat_join_request"]),
       });
       for (const update of updates) {
         this.offset = Math.max(this.offset, Number(update.update_id) + 1);
@@ -802,7 +905,7 @@ function createCallBackListen(api, deps, dataGban) {
           deps.globalData
         );
         await handlerAction(event);
-      } else if (event.type === "message_reaction" || event.type === "event") {
+      } else if (event.type === "callback_query" || event.type === "message_reaction" || event.type === "event") {
         const handlerAction = require("../handler/handlerAction.js")(
           api,
           deps.threadModel,
