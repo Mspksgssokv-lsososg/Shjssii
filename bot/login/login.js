@@ -789,7 +789,7 @@ function createCallBackListen(api, deps, dataGban) {
         return;
       }
 
-      if (event.type === "message") {
+      if (event.type === "message" || event.type === "message_reply") {
         const handlerAction = require("../handler/handlerAction.js")(
           api,
           deps.threadModel,
