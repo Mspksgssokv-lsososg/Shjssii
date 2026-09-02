@@ -1,58 +1,135 @@
 module.exports = {
 	config: {
 		name: "kick",
-		version: "1.3",
-		author: "NTKhang",
+		aliases: ["kickout"],
+		author: "SK-SIDDIK-KHAN",
+		version: "3.0.9",
 		countDown: 5,
 		role: 1,
-		description: {
-			vi: "Kick thành viên khỏi box chat",
-			en: "Kick member out of chat box"
-		},
-		category: "box chat",
-		guide: {
-			vi: "   {pn} @tags: dùng để kick những người được tag",
-			en: "   {pn} @tags: use to kick members who are tagged"
-		}
+		description: "Kick a user by reply, UID or mention",
+		category: "admin",
+		guide: "{pn} [uid/@mention]"
 	},
 
-	langs: {
-		vi: {
-			needAdmin: "Vui lòng thêm quản trị viên cho bot trước khi sử dụng tính năng này"
-		},
-		en: {
-			needAdmin: "Please add admin for bot before using this feature"
-		}
-	},
+	onStart: async function ({
+		event,
+		api,
+		message,
+		args,
+		usersData
+	}) {
+		try {
+			const threadID = event.threadID;
+			let targetID = null;
+			let targetName = "User";
 
-	onStart: async function ({ message, event, args, threadsData, api, getLang }) {
-		const adminIDs = await threadsData.get(event.threadID, "adminIDs", []);
-		const botID = String(api.getCurrentUserID());
-		const botIsAdmin = adminIDs.some(item => String(item?.id ?? item?.userID ?? item) === botID);
-		if (!botIsAdmin)
-			return message.reply(getLang("needAdmin"));
-		async function kickAndCheckError(uid) {
+			if (!event.isGroup)
+				return message.reply("⚠️ এই command শুধু গ্রুপে ব্যবহার করা যাবে!");
+
+			if (event.messageReply?.senderID) {
+				targetID = event.messageReply.senderID;
+			}
+
+			if (!targetID && Object.keys(event.mentions || {}).length) {
+				targetID = Object.keys(event.mentions)[0];
+			}
+
+			if (!targetID && args[0]) {
+				const input = args[0].replace("@", "").trim();
+
+				if (/^\d+$/.test(input)) {
+					targetID = input;
+				} else {
+					try {
+						const user = await usersData.get(input);
+
+						if (user?.userID) {
+							targetID = user.userID;
+						}
+					} catch (e) {}
+				}
+			}
+
+			if (!targetID) {
+				return message.reply(
+					"⚠️ কাকে kick করবে?\n\n" +
+					"1️⃣ তার message-এ Reply দিয়ে command দাও\n" +
+					`2️⃣ ${global.GoatBot?.config?.prefix || "!"}kick 100000000000000\n` +
+					"3️⃣ @mention করে command দাও"
+				);
+			}
+
+			targetID = String(targetID);
+
+			let targetInfo = null;
+
 			try {
-				await api.removeUserFromGroup(uid, event.threadID);
+				const info = await api.getUserInfo(targetID);
+				targetInfo = info?.[targetID];
+			} catch (e) {}
+
+			targetName =
+				targetInfo?.name ||
+				await usersData.getName(targetID).catch(() => "User");
+
+			const botID = String(api.getCurrentUserID());
+
+			if (targetID === botID)
+				return message.reply("⚠️ আমাকে kick করা যাবে না!");
+
+			if (targetID === String(event.senderID))
+				return message.reply("⚠️ নিজেকে kick করা যাবে না!");
+
+			const botAdmins =
+				global.GoatBot?.config?.adminBot ||
+				global.config?.adminUID ||
+				[];
+
+			if (
+				Array.isArray(botAdmins) &&
+				botAdmins.map(String).includes(targetID)
+			) {
+				return message.reply("⚠️ Bot Admin কে kick করা যাবে না!");
 			}
-			catch (e) {
-				message.reply(getLang("needAdmin"));
-				return "ERROR";
+
+			const threadInfo = await api.getThreadInfo(threadID);
+
+			const adminIDs = (threadInfo.adminIDs || []).map(String);
+
+			if (adminIDs.includes(targetID)) {
+				return message.reply("⚠️ গ্রুপ Admin কে kick করা যাবে না!");
 			}
-		}
-		if (!args[0]) {
-			if (!event.messageReply)
-				return message.SyntaxError();
-			await kickAndCheckError(event.messageReply.senderID);
-		}
-		else {
-			const uids = Object.keys(event.mentions);
-			if (uids.length === 0)
-				return message.SyntaxError();
-			if (await kickAndCheckError(uids.shift()) === "ERROR")
-				return;
-			for (const uid of uids)
-				api.removeUserFromGroup(uid, event.threadID);
+
+			if (!adminIDs.includes(botID)) {
+				return message.reply("⚠️ আমাকে আগে Group Admin বানাও!");
+			}
+
+			if (!adminIDs.includes(String(event.senderID))) {
+				return message.reply("⚠️ শুধু Group Admin এই command ব্যবহার করতে পারবে!");
+			}
+
+			if (
+				typeof api.removeUserFromGroup !== "function"
+			) {
+				return message.reply(
+					"❌ এই bot system-এ user remove করার API পাওয়া যাচ্ছে না!"
+				);
+			}
+
+			await api.removeUserFromGroup(targetID, threadID);
+
+			return message.reply(
+				`✅ ${targetName} কে group থেকে kick করা হয়েছে!\n\n` +
+				`🆔 ID: ${targetID}\n` +
+				`👮 By: ${event.senderID}`
+			);
+
+		} catch (error) {
+			console.error("Kick error:", error);
+
+			return message.reply(
+				`❌ Kick হয়নি!\n\n${error.message}`
+			);
 		}
 	}
 };
