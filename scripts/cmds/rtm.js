@@ -76,14 +76,14 @@ module.exports = {
       let step = 0;
       const animate = async () => {
         if (step < frames.length) {
-          await api.editMessage(frames[step], sent.messageID);
+          await api.editMessage(frames[step], sent.messageID, event.threadID);
           step++;
           return setTimeout(animate, 600);
         }
-        api.editMessage(output, sent.messageID);
+        await api.editMessage(output, sent.messageID, event.threadID);
       };
 
-      animate();
+      await animate();
 
     } catch (err) {
       console.error(err);
