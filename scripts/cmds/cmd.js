@@ -14,6 +14,62 @@ function getDomain(url) {
 	return match ? match[1] : null;
 }
 
+function safeFileName(fileName) {
+	fileName = path.basename(String(fileName || "").trim());
+	if (!/^[a-zA-Z0-9._-]+\.js$/i.test(fileName))
+		return null;
+	return fileName;
+}
+
+function getTelegramDocument(event) {
+	const msg = event?.message || event?.raw || {};
+	// Support both: sending the command in the document caption,
+	// and replying /cmd install (or /cmd add) to a .js document.
+	return msg.document || msg.reply_to_message?.document || event?.messageReply?.message?.document || null;
+}
+
+function getTelegramBot(api) {
+	// In this bot the real node-telegram-bot-api instance is exposed as api.bot.
+	return api?.bot || global.GoatBot?.api?.bot || global.GoatBot?.bot || global.GoatBot?.telegram || global.telegramBot || global.bot;
+}
+
+async function downloadTelegramDocument(event, api) {
+	const doc = getTelegramDocument(event);
+	if (!doc?.file_id)
+		throw new Error("Telegram document not found");
+	const bot = getTelegramBot(api);
+	if (!bot || typeof bot.getFileLink !== "function")
+		throw new Error("Telegram Bot API is not available");
+	const fileName = safeFileName(doc.file_name || "command.js");
+	if (!fileName)
+		throw new Error("Invalid JavaScript file name");
+	if (!fileName.toLowerCase().endsWith(".js"))
+		throw new Error("Only .js files are allowed");
+	const url = await bot.getFileLink(doc.file_id);
+	const response = await axios.get(url, { responseType: "arraybuffer", timeout: 60000, maxContentLength: 10 * 1024 * 1024 });
+	return { fileName, rawCode: Buffer.from(response.data).toString("utf8") };
+}
+
+function commandPath(fileName) {
+	const safe = safeFileName(fileName);
+	if (!safe) throw new Error("Invalid command file name");
+	return path.join(__dirname, safe);
+}
+
+function commandButtons(action, fileName, userID) {
+	return {
+		reply_markup: {
+			inline_keyboard: [
+				[
+					{ text: "♻️ Replace", callback_data: `cmd_replace_${userID}_${fileName}` },
+					{ text: "✏️ Rename", callback_data: `cmd_rename_${userID}_${fileName}` }
+				],
+				[{ text: "❌ Cancel", callback_data: `cmd_cancel_${userID}_${fileName}` }]
+			]
+		}
+	};
+}
+
 function isURL(str) {
 	try {
 		new URL(str);
@@ -97,6 +153,26 @@ module.exports = {
 
 	onStart: async ({ args, message, api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, event, commandName, getLang }) => {
 		const { unloadScripts, loadScripts } = global.utils;
+
+		// Telegram: /cmd install with a .js document (caption can be /cmd install).
+		const telegramDocument = getTelegramDocument(event);
+		if (telegramDocument && String(event.body || "").trim().toLowerCase().match(/^(?:\/)?cmd(?:\s+(?:install|add))?(?:\s+.*)?$/)) {
+			try {
+				const { fileName, rawCode } = await downloadTelegramDocument(event, api);
+				if (!rawCode.trim()) throw new Error("JavaScript file is empty");
+				if (fs.existsSync(commandPath(fileName))) {
+					global.cmdInstallPending = global.cmdInstallPending || new Map();
+					global.cmdInstallPending.set(`${event.senderID}:${fileName}`, { userID: String(event.senderID), fileName, rawCode, createdAt: Date.now() });
+					return message.reply({ body: `⚠️ ${fileName} already exists.\n\nChoose an action:`, reply_markup: commandButtons("install", fileName, String(event.senderID)).reply_markup });
+				}
+				const infoLoad = loadScripts("cmds", fileName, log, configCommands, api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, getLang, rawCode);
+				return infoLoad.status == "success"
+					? message.reply(`✅ Installed & loaded \`${infoLoad.name}.js\` from Telegram document.`)
+					: message.reply(`❌ Install failed: ${infoLoad.error.name}: ${infoLoad.error.message}`);
+			} catch (err) {
+				return message.reply(`❌ Document install failed: ${err.message}`);
+			}
+		}
 		if (
 			args[0] == "load"
 			&& args.length == 2
@@ -156,6 +232,23 @@ module.exports = {
 			infoUnload.status == "success" ?
 				message.reply(getLang("unloaded", infoUnload.name)) :
 				message.reply(getLang("unloadedError", infoUnload.name, infoUnload.error.name, infoUnload.error.message));
+		}
+		else if (args[0] == "rename") {
+			const oldFile = safeFileName(args[1]);
+			const newFile = safeFileName(args[2]);
+			if (!oldFile || !newFile) return message.reply("⚠️ Usage: /cmd rename old.js new.js");
+			if (!fs.existsSync(commandPath(oldFile))) return message.reply(`❌ ${oldFile} not found.`);
+			if (fs.existsSync(commandPath(newFile))) return message.reply(`⚠️ ${newFile} already exists.`);
+			try {
+				try { unloadScripts("cmds", oldFile, configCommands, getLang); } catch (_) {}
+				fs.renameSync(commandPath(oldFile), commandPath(newFile));
+				const db = global.db || {};
+				const infoLoad = loadScripts("cmds", newFile, log, configCommands, api, db.threadModel, db.userModel, db.dashBoardModel, db.globalModel, db.threadsData, db.usersData, db.dashBoardData, db.globalData, getLang);
+				if (infoLoad.status !== "success") throw infoLoad.error;
+				message.reply(`✅ Renamed ${oldFile} → ${newFile} and loaded.`);
+			} catch (err) {
+				message.reply(`❌ Rename failed: ${err.name || "Error"}: ${err.message || err}`);
+			}
 		}
 		else if (args[0] == "install") {
 			let url = args[1];
@@ -220,28 +313,84 @@ module.exports = {
 			if (!rawCode)
 				return message.reply(getLang("invalidUrlOrCode"));
 
-			if (fs.existsSync(path.join(__dirname, fileName)))
-				return message.reply(getLang("alreadExist"), (err, info) => {
-					global.GoatBot.onReaction.set(info.messageID, {
-						commandName,
-						messageID: info.messageID,
-						type: "install",
-						author: event.senderID,
-						data: {
-							fileName,
-							rawCode
-						}
-					});
+			fileName = safeFileName(fileName);
+			if (!fileName)
+				return message.reply(getLang("invalidFileName"));
+
+			if (fs.existsSync(commandPath(fileName))) {
+				global.cmdInstallPending = global.cmdInstallPending || new Map();
+				global.cmdInstallPending.set(`${event.senderID}:${fileName}`, {
+					userID: String(event.senderID),
+					fileName,
+					rawCode,
+					createdAt: Date.now()
 				});
-			else {
-				const infoLoad = loadScripts("cmds", fileName, log, configCommands, api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, getLang, rawCode);
-				infoLoad.status == "success" ?
-					message.reply(getLang("installed", infoLoad.name, path.join(__dirname, fileName).replace(process.cwd(), ""))) :
-					message.reply(getLang("installedError", infoLoad.name, infoLoad.error.name, infoLoad.error.message));
+				return message.reply({
+					body: `⚠️ ${fileName} already exists.\n\nChoose an action:`,
+					reply_markup: commandButtons("install", fileName, String(event.senderID)).reply_markup
+				});
 			}
+
+			const infoLoad = loadScripts("cmds", fileName, log, configCommands, api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, getLang, rawCode);
+			infoLoad.status == "success" ?
+				message.reply(getLang("installed", infoLoad.name, path.join(__dirname, fileName).replace(process.cwd(), ""))) :
+				message.reply(getLang("installedError", infoLoad.name, infoLoad.error.name, infoLoad.error.message));
 		}
 		else
 			message.SyntaxError();
+	},
+
+	onCallback: async function ({ event, ctx, message }) {
+		const data = String(event?.data || "");
+		const match = data.match(/^cmd_(replace|rename|cancel)_(\d+)_(.+\.js)$/i);
+		if (!match) return;
+		const [, action, userID, encodedFileName] = match;
+		if (String(event.userID) !== String(userID)) {
+			await ctx.answerCbQuery("❌ This button is not for you.");
+			return;
+		}
+		const fileName = safeFileName(encodedFileName);
+		const key = `${userID}:${fileName}`;
+		const pending = global.cmdInstallPending?.get(key);
+		if (!pending || Date.now() - pending.createdAt > 10 * 60 * 1000) {
+			global.cmdInstallPending?.delete(key);
+			await ctx.answerCbQuery("⚠️ This install request expired.");
+			return;
+		}
+
+		if (action === "cancel") {
+			global.cmdInstallPending.delete(key);
+			await ctx.answerCbQuery("Cancelled");
+			await ctx.editMessageText("❌ Install cancelled.");
+			return;
+		}
+
+		if (action === "replace") {
+			try {
+				const oldPath = commandPath(fileName);
+				if (global.GoatBot.commands?.has(pending.commandName || "")) {
+					try { global.utils.unloadScripts("cmds", fileName, configCommands, getLang); } catch (_) {}
+				}
+				const db = global.db || {};
+				const infoLoad = loadScripts("cmds", fileName, log, configCommands, global.GoatBot.api || global.GoatBot, db.threadModel, db.userModel, db.dashBoardModel, db.globalModel, db.threadsData, db.usersData, db.dashBoardData, db.globalData, (text) => text, pending.rawCode);
+				if (infoLoad.status !== "success") throw infoLoad.error;
+				global.cmdInstallPending.delete(key);
+				await ctx.answerCbQuery("Replaced successfully");
+				await ctx.editMessageText(`✅ Replaced and loaded \`${fileName}\`.`);
+			} catch (err) {
+				await ctx.answerCbQuery("❌ Replace failed");
+				await ctx.editMessageText(`❌ Replace failed: ${err.name || "Error"}: ${err.message || err}`);
+			}
+			return;
+		}
+
+		if (action === "rename") {
+			global.cmdRenamePending = global.cmdRenamePending || new Map();
+			global.cmdRenamePending.set(String(userID), { ...pending, oldFileName: fileName, createdAt: Date.now() });
+			await ctx.answerCbQuery("Send the new filename");
+			await ctx.editMessageText(`✏️ Send the new filename using:\n\n/cmd rename ${fileName} newname.js`);
+			return;
+		}
 	},
 
 	onReaction: async function ({ Reaction, message, event, api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, getLang }) {
@@ -256,16 +405,16 @@ module.exports = {
 	}
 };
 
-// do not edit this code because it use for obfuscate code
+
 const packageAlready = [];
 const spinner = "\\|/-";
 let count = 0;
 
 function loadScripts(folder, fileName, log, configCommands, api, threadModel, userModel, dashBoardModel, globalModel, threadsData, usersData, dashBoardData, globalData, getLang, rawCode) {
-	// global.GoatBot[folderModules == "cmds" ? "commandFilesPath" : "eventCommandsFilesPath"].push({
-	// 	filePath: pathCommand,
-	// 	commandName: [commandName, ...validAliases]
-	// });
+
+
+
+
 	const storageCommandFilesPath = global.GoatBot[folder == "cmds" ? "commandFilesPath" : "eventCommandsFilesPath"];
 
 	try {
