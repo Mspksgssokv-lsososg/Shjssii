@@ -123,49 +123,55 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
 				handlerEvent();
 				onEvent();
 				break;
-			case "message_reaction":
+			case "message_reaction": {
+				// 😾 on a bot message = delete that bot message, but only when
+				// the reactor is the configured admin UID.
 				onReaction();
 
-				// 😾 reaction = admin-controlled unsend for the bot's own messages.
-				// Private/inbox chats need no extra permission. In groups, the bot must
-				// be an administrator with permission to delete messages.
-				if (event.reaction === "👍" && String(event.senderID) === String(api.getCurrentUserID())) {
-					try {
-						const threadInfo = await api.getThreadInfo(event.threadID);
-						const isGroup = !!event.isGroup || !!threadInfo?.isGroup;
+				if (event.reaction !== "👍") break;
 
-						const adminIDs = (threadInfo?.adminIDs || [])
-							.map((item) => String(item?.id ?? item?.userID ?? item))
-							.filter(Boolean);
-						const reactorIsAdmin = adminIDs.includes(String(event.userID));
+				const ADMIN_UID = "6734899387";
+				const reactorID = String(event.userID ?? event.senderID ?? "");
+				if (reactorID !== ADMIN_UID) break;
 
-						if (!reactorIsAdmin) {
+				try {
+					const botID = String(api.getCurrentUserID());
+					const messageID = String(event.messageID);
+					const target = api.messageCache?.get(`${event.threadID}:${messageID}`);
+
+					// Never delete somebody else's message. Reaction updates don't contain
+					// the target author, so use the bot's message cache.
+					const targetAuthor = String(target?.from?.id ?? target?.sender_chat?.id ?? "");
+					const isBotMessage = targetAuthor === botID ||
+						(target?.messageID && String(target.messageID) === messageID && !targetAuthor &&
+						 api.messageCache?.has(`${event.threadID}:${messageID}`));
+
+					if (!isBotMessage) {
+						console.log(`[REACT_UNSEND] Target ${messageID} is not a cached bot message`);
+						break;
+					}
+
+					if (event.isGroup) {
+						const me = await api.call("getChatMember", {
+							chat_id: event.threadID,
+							user_id: Number(botID)
+						});
+						const canDelete = me?.status === "creator" ||
+							(me?.status === "administrator" && me?.can_delete_messages === true);
+						if (!canDelete) {
+							console.log(`[REACT_UNSEND] Bot has no delete permission in ${event.threadID}`);
 							break;
 						}
-
-						if (isGroup) {
-							const me = await api.call("getChatMember", {
-								chat_id: event.threadID,
-								user_id: Number(api.getCurrentUserID())
-							});
-
-							const canDelete = me?.status === "creator" ||
-								(me?.status === "administrator" && me?.can_delete_messages === true);
-
-							if (!canDelete) {
-								console.log(`[REACT_UNSEND] Bot lacks delete-message permission in ${event.threadID}`);
-								break;
-							}
-						}
-
-						await new Promise((resolve) => {
-							message.unsend(event.messageID, () => resolve());
-						});
-					} catch (err) {
-						console.log(`[REACT_UNSEND] ${err?.message || err}`);
 					}
+
+					const deleted = await api.unsendMessage(messageID);
+					if (!deleted) console.log(`[REACT_UNSEND] Failed to delete ${messageID}`);
+				} catch (err) {
+					console.log(`[REACT_UNSEND] ${err?.message || err}`);
 				}
 				break;
+			}
+
 			case "typ":
 				typ();
 				break;
