@@ -20,6 +20,51 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
 		const { onStart, onChat, onReply, onEvent, handlerEvent, onReaction, typ, presence, read_receipt } = handlerChat;
 
 		switch (event.type) {
+      case "callback_query": {
+        try {
+          await api.answerCallbackQuery?.(event.callbackQueryID, "✅");
+        } catch (_) {}
+
+        const data = String(event.callbackData || "");
+
+        // cmd:<command> [args] -> execute the normal command pipeline.
+        if (data.startsWith("cmd:")) {
+          const commandText = data.slice(4).trim();
+          const prefix = global.utils.getPrefix(event.threadID);
+          const syntheticEvent = {
+            ...event,
+            type: "message",
+            body: prefix + commandText,
+            raw: event.raw?.message || event.raw,
+            isReply: false
+          };
+          await handlerAction(syntheticEvent);
+          return;
+        }
+
+        // button:<command>:<payload> -> call an optional command onButton handler.
+        if (data.startsWith("button:")) {
+          const parts = data.slice(7).split(":");
+          const commandName = (parts.shift() || "").toLowerCase();
+          const command = global.GoatBot.commands.get(commandName) ||
+            global.GoatBot.commands.get(global.GoatBot.aliases.get(commandName));
+
+          if (!command) return;
+
+          if (typeof command.onButton === "function") {
+            const buttonMessage = createFuncMessage(api, event);
+            await command.onButton({
+              api,
+              event,
+              message: buttonMessage,
+              args: parts,
+              commandName: command.config.name,
+              data: parts.join(":")
+            });
+          }
+        }
+        return;
+      }
 			case "message":
 			case "message_reply":
 			case "message_unsend":
