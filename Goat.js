@@ -90,7 +90,6 @@ global.GoatBot = {
 	oldListening: [], // store old listening handle
 	callbackListenTime: {}, // store callback listen 
 	storage5Message: [], // store 5 message to check listening loop
-	fcaApi: null, // store fca api
 	botID: null // store bot id
 };
 
@@ -141,11 +140,6 @@ global.temp = {
 	createThreadData: [],
 	createUserData: [],
 	createThreadDataError: [], // Can't get info of groups with instagram members
-	filesOfGoogleDrive: {
-		arraybuffer: {},
-		stream: {},
-		fileNames: {}
-	},
 	contentScripts: {
 		cmds: {},
 		events: {}
@@ -232,14 +226,6 @@ if (config.autoRestart) {
 			colors.hex("#eb6a07", version),
 			colors.hex("#eb6a07", "node update")
 		));
-	// —————————— CHECK FOLDER GOOGLE DRIVE —————————— //
-	try {
-		const parentIdGoogleDrive = await utils.drive.checkAndCreateParentFolder("GoatBot");
-		utils.drive.parentID = parentIdGoogleDrive;
-	}
-	catch (err) {
-		utils.log.warn("GOOGLE DRIVE", "Google Drive is unavailable; Telegram core will continue without Drive attachments.");
-	}
 	// ———————————————————— LOGIN ———————————————————— //
 	require(`./bot/login/login${NODE_ENV === 'development' ? '.dev.js' : '.js'}`);
 })();
