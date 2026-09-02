@@ -29,6 +29,9 @@ const taskQueue = new TaskQueue(function (task, callback) {
 
 const { creatingUserData } = global.client.database;
 
+// Facebook user IDs are stored and handled as strings. Do not coerce them to Number. 
+
+
 module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 	let Users = [];
 	const pathUsersData = path.join(__dirname, "..", "data/usersData.json");
@@ -178,10 +181,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 	}
 
 	async function getName(userID, checkData = true) {
-		if (isNaN(userID)) {
+		if (userID === undefined || userID === null || String(userID).trim() === "") {
 			throw new CustomError({
 				name: "INVALID_USER_ID",
-				message: `The first argument (userID) must be a number, not ${typeof userID}`
+				message: `The first argument (userID) is required and cannot be empty`
 			});
 		}
 
@@ -199,10 +202,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 	}
 
 	async function getAvatarUrl(userID) {
-		if (isNaN(userID)) {
+		if (userID === undefined || userID === null || String(userID).trim() === "") {
 			throw new CustomError({
 				name: "INVALID_USER_ID",
-				message: `The first argument (userID) must be a number, not ${typeof userID}`
+				message: `The first argument (userID) is required and cannot be empty`
 			});
 		}
 		try {
@@ -228,10 +231,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 						message: `User with id "${userID}" already exists in the data`
 					});
 				}
-				if (isNaN(userID)) {
+				if (userID === undefined || userID === null || String(userID).trim() === "") {
 					throw new CustomError({
 						name: "INVALID_USER_ID",
-						message: `The first argument (userID) must be a number, not ${typeof userID}`
+						message: `The first argument (userID) is required and cannot be empty`
 					});
 				}
 				userInfo = userInfo || (await api.getUserInfo(userID))[userID];
@@ -276,10 +279,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise(async function (resolve, reject) {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 					const infoUser = await get_(userID);
@@ -342,10 +345,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 	}
 
 	async function get_(userID, path, defaultValue, query) {
-		if (isNaN(userID)) {
+		if (userID === undefined || userID === null || String(userID).trim() === "") {
 			throw new CustomError({
 				name: "INVALID_USER_ID",
-				message: `The first argument (userID) must be a number, not ${typeof userID}`
+				message: `The first argument (userID) is required and cannot be empty`
 			});
 		}
 		let userData;
@@ -395,10 +398,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise((resolve, reject) => {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 
@@ -431,10 +434,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise(async function (resolve, reject) {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not a ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 					if (typeof path !== "string")
@@ -479,10 +482,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise((resolve, reject) => {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 					const money = await get_(userID, "money");
@@ -499,10 +502,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise((resolve, reject) => {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 					if (isNaN(money)) {
@@ -538,10 +541,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise((resolve, reject) => {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 					if (isNaN(money)) {
@@ -576,10 +579,10 @@ module.exports = async function (databaseType, userModel, api, fakeGraphql) {
 		return new Promise((resolve, reject) => {
 			taskQueue.push(async function () {
 				try {
-					if (isNaN(userID)) {
+					if (userID === undefined || userID === null || String(userID).trim() === "") {
 						throw new CustomError({
 							name: "INVALID_USER_ID",
-							message: `The first argument (userID) must be a number, not ${typeof userID}`
+							message: `The first argument (userID) is required and cannot be empty`
 						});
 					}
 					await save(userID, { userID }, "remove");
