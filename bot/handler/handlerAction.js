@@ -9,7 +9,7 @@ const fs = require("fs-extra")
 module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) => {
 	const handlerEvents = require(process.env.NODE_ENV == 'development' ? "./handlerEvents.dev.js" : "./handlerEvents.js")(api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData);
 
-	return async function (event) {
+	return async function handlerAction(event) {
 		const message = createFuncMessage(api, event);
 
 		await handlerCheckDB(usersData, threadsData, event);
@@ -71,69 +71,100 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
 				onChat();
 				onStart();
 				onReply();
-        if(event.type == "message_unsend"){
-          
-          let resend = await threadsData.get(event.threadID, "settings.reSend");
-		if (resend == true && event.senderID 
-!== api.getCurrentUserID()){
-      let umid = global.reSend[event.threadID].findIndex(e => e.messageID === event.messageID)
-      
-      if(umid>(-1)){
-let nname = await usersData.getName(event.senderID)
-        let attch = []
-if(global.reSend[event.threadID][umid].attachments.length>0){
-  let cn = 0
-  for(var abc of global.reSend[event.threadID][umid].attachments){
-   if(abc.type == "audio"){
-    
-    cn += 1;
 
-   let pts = `scripts/cmds/tmp/${cn}.mp3`
-					let res2 = (await axios.get(abc.url, {
-						responseType: "arraybuffer"
-					})).data;
-			fs.writeFileSync(pts, Buffer.from(res2, "utf-8"))
-    
-  attch.push(fs.createReadStream(pts))} else{
-     attch.push(await global.utils.getStreamFromURL(abc.url))
-  }
-  }
-}
-        
-  api.sendMessage({body: nname + " removed:\n\n" + global.reSend[event.threadID][umid].body,
-mentions:[{id:event.senderID, tag:nname}],
-    attachment:attch
-                  }, event.threadID)
-                   
+				if (event.type === "message_unsend") {
+					const resend = await threadsData.get(event.threadID, "settings.reSend");
+					const resendStore = global.reSend?.[event.threadID];
 
-  
-      }
-    }
-        }
+					if (
+						resend === true &&
+						event.senderID !== api.getCurrentUserID() &&
+						Array.isArray(resendStore)
+					) {
+						const umid = resendStore.findIndex(e => e?.messageID === event.messageID);
+
+						if (umid > -1) {
+							const nname = await usersData.getName(event.senderID);
+							const attch = [];
+							const attachments = Array.isArray(resendStore[umid]?.attachments)
+								? resendStore[umid].attachments
+								: [];
+
+							let cn = 0;
+							for (const abc of attachments) {
+								if (!abc?.url) continue;
+
+								if (abc.type === "audio") {
+									cn += 1;
+									const pts = `scripts/cmds/tmp/${cn}.mp3`;
+									const res2 = (await axios.get(abc.url, {
+										responseType: "arraybuffer"
+									})).data;
+									fs.ensureDirSync("scripts/cmds/tmp");
+									fs.writeFileSync(pts, Buffer.from(res2));
+									attch.push(fs.createReadStream(pts));
+								}
+								else {
+									attch.push(await global.utils.getStreamFromURL(abc.url));
+								}
+							}
+
+							await api.sendMessage({
+								body: `${nname} removed:\n\n${resendStore[umid]?.body || ""}`,
+								mentions: [{ id: event.senderID, tag: nname }],
+								attachment: attch
+							}, event.threadID);
+						}
+					}
+				}
 				break;
+
 			case "event":
 				handlerEvent();
 				onEvent();
 				break;
 			case "message_reaction":
 				onReaction();
-        if(event.reaction == ""){
-  if(event.userID == "100033670741301","61571904047861"){
-api.removeUserFromGroup(event.senderID, event.threadID, (err) => {
-                if (err) return console.log(err);
-              });
 
-}else{
-    message.send(":)")
-  }
-  }
-        if(event.reaction ==  "😾"){
-  if(event.senderID == api.getCurrentUserID()){if(event.userID == "61575011217788","100083520680035"){
-    message.unsend(event.messageID)
-}else{
-    message.send(":)")
-  }}
-        }
+				// 😾 reaction = admin-controlled unsend for the bot's own messages.
+				// Private/inbox chats need no extra permission. In groups, the bot must
+				// be an administrator with permission to delete messages.
+				if (event.reaction === "👍" && String(event.senderID) === String(api.getCurrentUserID())) {
+					try {
+						const threadInfo = await api.getThreadInfo(event.threadID);
+						const isGroup = !!event.isGroup || !!threadInfo?.isGroup;
+
+						const adminIDs = (threadInfo?.adminIDs || [])
+							.map((item) => String(item?.id ?? item?.userID ?? item))
+							.filter(Boolean);
+						const reactorIsAdmin = adminIDs.includes(String(event.userID));
+
+						if (!reactorIsAdmin) {
+							break;
+						}
+
+						if (isGroup) {
+							const me = await api.call("getChatMember", {
+								chat_id: event.threadID,
+								user_id: Number(api.getCurrentUserID())
+							});
+
+							const canDelete = me?.status === "creator" ||
+								(me?.status === "administrator" && me?.can_delete_messages === true);
+
+							if (!canDelete) {
+								console.log(`[REACT_UNSEND] Bot lacks delete-message permission in ${event.threadID}`);
+								break;
+							}
+						}
+
+						await new Promise((resolve) => {
+							message.unsend(event.messageID, () => resolve());
+						});
+					} catch (err) {
+						console.log(`[REACT_UNSEND] ${err?.message || err}`);
+					}
+				}
 				break;
 			case "typ":
 				typ();
