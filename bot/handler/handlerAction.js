@@ -128,7 +128,7 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
 				// the reactor is the configured admin UID.
 				onReaction();
 
-				if (event.reaction !== "👍") break;
+				if (event.reaction !== "😾") break;
 
 				const ADMIN_UID = "6734899387";
 				const reactorID = String(event.userID ?? event.senderID ?? "");
@@ -147,7 +147,9 @@ module.exports = (api, threadModel, userModel, dashBoardModel, globalModel, user
 						 api.messageCache?.has(`${event.threadID}:${messageID}`));
 
 					if (!isBotMessage) {
-						console.log(`[REACT_UNSEND] Target ${messageID} is not a cached bot message`);
+						// Reaction events can arrive after the local message cache entry
+						// has expired. Keep this silent; unsendMessage() remains the
+						// final safety check and will simply return false when unknown.
 						break;
 					}
 
