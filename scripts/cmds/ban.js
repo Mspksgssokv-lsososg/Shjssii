@@ -71,6 +71,11 @@ module.exports = {
 
 		const dataBanned = await threadsData.get(event.threadID, 'data.banned_ban', []);
 
+		// Fix: adminIDs can be strings, numbers, or objects.
+		const isAdmin = id => (adminIDs || []).some(item =>
+			String(item?.id ?? item?.userID ?? item) === String(id)
+		);
+
 		if (args[0] == 'unban') {
 			if (!isNaN(args[1]))
 				target = args[1];
@@ -83,7 +88,7 @@ module.exports = {
 			else
 				return api.sendMessage(getLang('notFoundTargetUnban'), event.threadID, event.messageID);
 
-			const index = dataBanned.findIndex(item => item.id == target);
+			const index = dataBanned.findIndex(item => String(item.id) == String(target));
 			if (index == -1)
 				return api.sendMessage(getLang('userNotBanned', target), event.threadID, event.messageID);
 
@@ -97,9 +102,11 @@ module.exports = {
 			if (!dataBanned.length)
 				return;
 			for (const user of dataBanned) {
-				if (event.participantIDs.includes(user.id))
-					api.removeUserFromGroup(user.id, event.threadID);
+				// Fix: Facebook IDs may be number/string.
+				if ((event.participantIDs || []).map(String).includes(String(user.id)))
+					await api.removeUserFromGroup(user.id, event.threadID);
 			}
+			return;
 		}
 
 		if (event.messageReply?.senderID) {
@@ -138,12 +145,12 @@ module.exports = {
 
 		if (!target)
 			return message.reply(getLang('notFoundTarget'));
-		if (target == senderID)
+		if (String(target) == String(senderID))
 			return message.reply(getLang('cantSelfBan'));
-		if (adminIDs.includes(target))
+		if (isAdmin(target))
 			return message.reply(getLang('cantBanAdmin'));
 
-		const banned = dataBanned.find(item => item.id == target);
+		const banned = dataBanned.find(item => String(item.id) == String(target));
 		if (banned)
 			return message.reply(getLang('existedBan'));
 
@@ -158,26 +165,31 @@ module.exports = {
 		dataBanned.push(data);
 		await threadsData.set(event.threadID, dataBanned, 'data.banned_ban');
 		message.reply(getLang('bannedSuccess', name), () => {
-			if (members.some(item => item.userID == target)) {
-				if (adminIDs.includes(api.getCurrentUserID())) {
-					if (event.participantIDs.includes(target))
-						api.removeUserFromGroup(target, event.threadID);
-				}
-				else {
-					message.send(getLang('needAdmin'), (err, info) => {
-						global.GoatBot.onEvent.push({
-							messageID: info.messageID,
-							onStart: ({ event }) => {
-								if (event.logMessageType === "log:thread-admins" && event.logMessageData.ADMIN_EVENT == "add_admin") {
-									const { TARGET_ID } = event.logMessageData;
-									if (TARGET_ID == api.getCurrentUserID()) {
-										api.removeUserFromGroup(target, event.threadID, () => global.GoatBot.onEvent = global.GoatBot.onEvent.filter(item => item.messageID != info.messageID));
-									}
+			const targetIsMember = (members || []).some(item => String(item.userID) == String(target));
+			if (!targetIsMember)
+				return;
+
+			// Fix: correctly detect whether the bot itself is an admin.
+			if (isAdmin(api.getCurrentUserID())) {
+				if ((event.participantIDs || []).map(String).includes(String(target)))
+					api.removeUserFromGroup(target, event.threadID);
+			}
+			else {
+				message.send(getLang('needAdmin'), (err, info) => {
+					if (err || !info)
+						return;
+					global.GoatBot.onEvent.push({
+						messageID: info.messageID,
+						onStart: ({ event }) => {
+							if (event.logMessageType === "log:thread-admins" && event.logMessageData.ADMIN_EVENT == "add_admin") {
+								const { TARGET_ID } = event.logMessageData;
+								if (String(TARGET_ID) == String(api.getCurrentUserID())) {
+									api.removeUserFromGroup(target, event.threadID, () => global.GoatBot.onEvent = global.GoatBot.onEvent.filter(item => item.messageID != info.messageID));
 								}
 							}
-						});
+						}
 					});
-				}
+				});
 			}
 		});
 	},
@@ -186,23 +198,25 @@ module.exports = {
 		if (event.logMessageType == "log:subscribe") {
 			const { threadID } = event;
 			const dataBanned = await threadsData.get(threadID, 'data.banned_ban', []);
-			const usersAdded = event.logMessageData.addedParticipants;
+			const usersAdded = event.logMessageData.addedParticipants || [];
 
 			for (const user of usersAdded) {
 				const { userFbId, fullName } = user;
-				const banned = dataBanned.find(item => item.id == userFbId);
+				const banned = dataBanned.find(item => String(item.id) == String(userFbId));
 				if (banned) {
 					const reason = banned.reason || getLang('noReason');
 					const time = banned.time;
 					return api.removeUserFromGroup(userFbId, threadID, err => {
 						if (err)
 							return message.send(getLang('needAdminToKick', fullName, userFbId), (err, info) => {
+								if (err || !info)
+									return;
 								global.GoatBot.onEvent.push({
 									messageID: info.messageID,
 									onStart: ({ event }) => {
 										if (event.logMessageType === "log:thread-admins" && event.logMessageData.ADMIN_EVENT == "add_admin") {
 											const { TARGET_ID } = event.logMessageData;
-											if (TARGET_ID == api.getCurrentUserID()) {
+											if (String(TARGET_ID) == String(api.getCurrentUserID())) {
 												api.removeUserFromGroup(userFbId, event.threadID, () => global.GoatBot.onEvent = global.GoatBot.onEvent.filter(item => item.messageID != info.messageID));
 											}
 										}
